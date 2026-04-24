@@ -29,6 +29,7 @@ from sklearn.metrics import (
     brier_score_loss,
     confusion_matrix,
 )
+from sklearn.calibration import calibration_curve
 
 from src.synthetic_data import generate_dataset
 from src.feature_engineering import extract_tabular_features
@@ -125,6 +126,109 @@ def plot_roc_curve(
     plt.savefig(output_path, dpi=300)
     print(f"ROC curve saved to {output_path}")
     plt.close()
+
+
+def plot_calibration_curve(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    output_path: str,
+    n_bins: int = 10,
+) -> float:
+    """
+    Plot and save a reliability diagram (calibration curve) with ECE annotation.
+
+    A well-calibrated model has fraction_of_positives ≈ mean_predicted_value at
+    every probability level.  The diagonal dashed line represents perfect calibration.
+
+    Expected Calibration Error (ECE) is the weighted mean of |predicted – actual|
+    across bins.  Lower is better; ECE < 0.05 is generally considered well-calibrated.
+
+    Why this matters clinically:
+      - If a model says "60% readmission risk" it should be right ~60% of the time.
+      - Poor calibration means the raw probability output cannot be trusted directly.
+      - Can be corrected post-hoc with Platt scaling or isotonic regression.
+
+    Args:
+        y_true:      Ground-truth binary labels.
+        y_prob:      Predicted probabilities for the positive class.
+        output_path: Path to save the PNG.
+        n_bins:      Number of calibration bins (default: 10).
+
+    Returns:
+        ECE (float) — lower is better.
+    """
+    fraction_of_positives, mean_predicted = calibration_curve(
+        y_true, y_prob, n_bins=n_bins, strategy="uniform"
+    )
+
+    # Expected Calibration Error: weighted average of |gap| per bin
+    bin_edges = np.linspace(0, 1, n_bins + 1)
+    bin_counts = np.zeros(n_bins)
+    for i in range(n_bins):
+        mask = (y_prob >= bin_edges[i]) & (y_prob < bin_edges[i + 1])
+        bin_counts[i] = mask.sum()
+
+    # Align bin_counts length with calibration curve output (sklearn may drop empty bins)
+    n_points = len(mean_predicted)
+    if n_points < n_bins:
+        # Recompute counts for the bins that had data
+        active_counts = np.array([
+            ((y_prob >= bin_edges[i]) & (y_prob < bin_edges[i + 1])).sum()
+            for i in range(n_bins)
+            if ((y_prob >= bin_edges[i]) & (y_prob < bin_edges[i + 1])).sum() > 0
+        ], dtype=float)
+        if len(active_counts) == n_points:
+            bin_counts = active_counts
+
+    weights = bin_counts[:n_points] / max(bin_counts[:n_points].sum(), 1)
+    ece = float(np.sum(weights * np.abs(fraction_of_positives - mean_predicted)))
+
+    # ── Plot ──────────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(7, 6))
+
+    ax.plot(
+        mean_predicted, fraction_of_positives,
+        "s-", color="#3498db", linewidth=2.5, markersize=7,
+        label=f"Readmission model (ECE = {ece:.3f})",
+    )
+    ax.plot(
+        [0, 1], [0, 1],
+        "k--", linewidth=1.5, alpha=0.6,
+        label="Perfect calibration",
+    )
+
+    # Shade calibration gap
+    ax.fill_between(
+        mean_predicted,
+        mean_predicted,          # perfect diagonal
+        fraction_of_positives,   # model curve
+        alpha=0.15, color="#3498db",
+        label="Calibration gap",
+    )
+
+    ax.set_xlabel("Mean Predicted Probability", fontsize=12)
+    ax.set_ylabel("Fraction of Positives (Observed Frequency)", fontsize=12)
+    ax.set_title("Reliability Diagram — 30-Day Readmission Model", fontsize=13, fontweight="bold")
+    ax.legend(loc="upper left", fontsize=10)
+    ax.grid(alpha=0.3)
+    ax.set_xlim([-0.02, 1.02])
+    ax.set_ylim([-0.02, 1.10])
+
+    # ECE annotation box
+    ax.text(
+        0.98, 0.05,
+        f"ECE = {ece:.3f}\n({'Well calibrated ✓' if ece < 0.05 else 'Needs calibration'})",
+        transform=ax.transAxes,
+        ha="right", va="bottom", fontsize=10,
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="#eaf4ff", edgecolor="#3498db", alpha=0.9),
+    )
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"✓ Calibration curve saved to {output_path}  (ECE = {ece:.3f})")
+    return ece
 
 
 def plot_feature_importance(
@@ -301,6 +405,11 @@ def main():
     importances = model.get_feature_importance()
     importance_path = os.path.join(args.output_dir, "feature_importance.png")
     plot_feature_importance(importances, len(feature_names), importance_path)
+
+    # Generate calibration curve + ECE
+    calib_path = os.path.join(args.output_dir, "calibration_curve.png")
+    ece = plot_calibration_curve(y_test, y_pred_proba[:, 1], calib_path)
+    metrics["ece"] = ece
 
     # Save metrics to JSON
     metrics_path = os.path.join(args.output_dir, "metrics.json")

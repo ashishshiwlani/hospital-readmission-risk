@@ -301,6 +301,63 @@ with col_explanation:
                 )
 
 # ============================================================================
+# MODEL CALIBRATION SECTION
+# ============================================================================
+
+st.divider()
+st.header("📐 Model Calibration")
+
+calib_path  = Path(__file__).parent.parent / "models" / "calibration_curve.png"
+metrics_path = Path(__file__).parent.parent / "models" / "metrics.json"
+
+if calib_path.exists():
+    col_calib, col_explainer = st.columns([1.2, 1])
+
+    with col_calib:
+        st.image(str(calib_path), use_column_width=True)
+
+    with col_explainer:
+        st.subheader("What is calibration?")
+        st.markdown(
+            """
+            A **well-calibrated** model means: when it says "60% readmission risk",
+            roughly 60% of those patients actually get readmitted.
+
+            The **reliability diagram** compares:
+            - **X-axis**: the model's predicted probability
+            - **Y-axis**: the observed fraction of positives in that bin
+
+            The dashed line is **perfect calibration**. Points above it
+            mean the model is under-confident; below means over-confident.
+            """
+        )
+
+        if metrics_path.exists():
+            import json as _json
+            with open(metrics_path) as _f:
+                _m = _json.load(_f)
+            ece = _m.get("ece")
+            if ece is not None:
+                colour = "green" if ece < 0.05 else ("orange" if ece < 0.10 else "red")
+                st.markdown(
+                    f"**Expected Calibration Error (ECE):** "
+                    f"<span style='color:{colour};font-weight:bold'>{ece:.3f}</span><br>"
+                    f"{'✓ Well calibrated (ECE < 0.05)' if ece < 0.05 else '⚠️ Some miscalibration — consider Platt scaling'}",
+                    unsafe_allow_html=True,
+                )
+
+        st.info(
+            "ECE < 0.05 → well calibrated ✓\n\n"
+            "ECE 0.05–0.10 → minor miscalibration\n\n"
+            "ECE > 0.10 → needs post-hoc recalibration (Platt / isotonic)"
+        )
+else:
+    st.info(
+        "Calibration curve will appear here after training. "
+        "Run `python src/train.py` to generate it."
+    )
+
+# ============================================================================
 # FOOTER: DISCLAIMERS AND INFO
 # ============================================================================
 
